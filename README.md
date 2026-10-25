@@ -47,12 +47,12 @@ pip install dxcam opencv-python numpy lz4 pygame pywin32 Pillow screeninfo
 
 **打包接收端 (B端)：**
 ```bash
-pyinstaller -F -w -i icon.ico receiver.py
+pyinstaller -F -w receiver.py
 ```
 
 **打包发送端 (A端) + 资源：**
 ```bash
-pyinstaller -F -w -i icon.ico --add-data "ibeam.png;." --hidden-import screeninfo --hidden-import dxcam sender_gui.py
+pyinstaller -F -w -i --add-data "ibeam.png;." --hidden-import screeninfo --hidden-import dxcam sender_gui.py
 ```
 > *注：请确保 `ibeam.png`（工字型光标素材）与脚本在同一目录，打包时会自动打入内部。*
 
