@@ -18,18 +18,22 @@ import gc
 import json
 import os
 import re
+import sys
 from collections import deque
 from ctypes import windll, wintypes
-from PIL import Image
+from PIL import Image, ImageDraw
 from screeninfo import get_monitors
-import sys
+
+# 🔥 托盘库
+try:
+    import pystray
+except ImportError:
+    print("⚠️ 缺少 pystray 库，请运行: pip install pystray")
 
 def get_resource_path(relative_path):
     """ 获取资源文件的绝对路径 (兼容开发和 PyInstaller 打包后) """
     if hasattr(sys, '_MEIPASS'):
-        # PyInstaller 打包后运行时的临时目录
         return os.path.join(sys._MEIPASS, relative_path)
-    # 开发环境下的当前目录
     return os.path.join(os.path.abspath("."), relative_path)
 
 gc.disable()
@@ -94,14 +98,11 @@ def scan_valid_screens(log_func):
     valid_screens = []
     log_func("正在自动解析 DXGI 硬件拓扑结构...")
     
-    # 获取物理坐标
     monitors = get_monitors()
     monitors_sorted = sorted(monitors, key=lambda m: (m.x, m.y))
     
     try:
-        # 核心：直接解析文本，绝不通过暴力创建实例去试错
         raw_info = dxcam.output_info()
-        # 匹配类似: Device[1] Output[0]: Res:(1920, 1080) Rot:0 Primary:False
         pattern = re.compile(r"Device\[(\d+)\] Output\[(\d+)\]: Res:\((\d+),\s*(\d+)\)")
         
         raw_screens = []
@@ -114,9 +115,7 @@ def scan_valid_screens(log_func):
                 h = int(match.group(4))
                 raw_screens.append({"device": dev, "output": out, "w": w, "h": h})
         
-        # 绑定物理坐标
         for i, rs in enumerate(raw_screens):
-            # 按顺序匹配物理坐标
             if i < len(monitors_sorted):
                 mon = monitors_sorted[i]
                 left, top = mon.x, mon.y
@@ -165,7 +164,6 @@ class NetCasterSender:
     def log(self, msg): self.log_queue.put(msg)
 
     def run(self):
-        # 加入重试机制，防止 COMError
         max_retries = 3
         for attempt in range(max_retries):
             try:
@@ -278,19 +276,25 @@ class NetCasterSender:
                 ctype = 1
                 rel_x = cx - self.mon_left; rel_y = cy - self.mon_top
                 
+                # 🔥 恢复：直接发送真实的光标图片数据
                 if hcursor != last_handle:
-                    if hcursor in cursor_cache: img_bytes, hx, hy = cursor_cache[hcursor]
+                    if hcursor in cursor_cache: 
+                        img_bytes, hx, hy = cursor_cache[hcursor]
                     else:
                         img, hx, hy = get_cursor_image_and_hotspot()
                         if img:
                             buf = io.BytesIO(); img.save(buf, format='PNG'); img_bytes = buf.getvalue()
                             cursor_cache[hcursor] = (img_bytes, hx, hy)
-                        else: img_bytes = b""
+                        else: 
+                            img_bytes = b""
                     last_handle = hcursor; last_hx, last_hy = hx, hy
-                else: img_bytes = b""; hx, hy = last_hx, last_hy
+                else: 
+                    # 没变化就不发图片，发空数据
+                    img_bytes = b""; hx, hy = last_hx, last_hy
 
             if ctype == 0: rel_x, rel_y = 0, 0
                 
+            # 打包发送：ctype(1字节) + X(4) + Y(4) + hx(2) + hy(2) + img_size(4) + img_bytes
             header = struct.pack('<BiiHHI', ctype, rel_x, rel_y, hx, hy, len(img_bytes))
             try: sock.sendto(header + img_bytes, (self.target_ip, self.MOUSE_PORT))
             except Exception: pass
@@ -331,10 +335,14 @@ class App:
         self.stats_queue = queue.Queue()
         self.scanned_screens = []
         
+        self.tray_icon = None
+        self.is_hidden = False
+        
         self.setup_ui()
         self.load_config()
         self.root.after(100, self.process_queues)
         
+        self.init_tray()
         threading.Thread(target=self.async_scan, daemon=True).start()
 
     def setup_ui(self):
@@ -367,6 +375,57 @@ class App:
         frame_bottom.pack(fill="both", expand=True, padx=10, pady=5)
         self.log_text = tk.Text(frame_bottom, height=8, state="disabled", bg="#f0f0f0", font=("Consolas", 9))
         self.log_text.pack(fill="both", expand=True, padx=5, pady=5)
+
+    def create_image(self):
+        size = 256
+        image = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+        d = ImageDraw.Draw(image)
+        d.rounded_rectangle([10, 10, 246, 246], radius=50, fill=(30, 32, 36, 255))
+        d.rounded_rectangle([40, 60, 120, 160], radius=8, fill=(100, 100, 100, 255))
+        d.rounded_rectangle([136, 60, 216, 160], radius=8, fill=(0, 200, 255, 255))
+        d.line([80, 160, 80, 190], fill=(100, 100, 100, 255), width=8)
+        d.line([176, 160, 176, 190], fill=(0, 200, 255, 255), width=8)
+        d.line([60, 190, 100, 190], fill=(100, 100, 100, 255), width=6)
+        d.line([156, 190, 196, 190], fill=(0, 200, 255, 255), width=6)
+        d.ellipse([124, 80, 132, 88], fill=(255, 255, 255, 255))
+        d.ellipse([124, 106, 132, 114], fill=(255, 255, 255, 255))
+        d.ellipse([124, 132, 132, 140], fill=(255, 255, 255, 255))
+        return image
+
+    def init_tray(self):
+        menu = pystray.Menu(
+            pystray.MenuItem('显示主界面', self.show_window, default=True),
+            pystray.MenuItem('退出', self.quit_app)
+        )
+        try:
+            icon_img = Image.open(get_resource_path("logo.png"))
+        except:
+            icon_img = self.create_image()
+            
+        self.tray_icon = pystray.Icon("NetCasting", icon_img, "NetCasting Sender", menu)
+        threading.Thread(target=self.tray_icon.run, daemon=True).start()
+
+    def hide_to_tray(self):
+        self.root.withdraw()
+        self.is_hidden = True
+
+    def show_window(self):
+        self.root.after(0, self.root.deiconify)
+        self.is_hidden = False
+
+    def quit_app(self):
+        self.stop_stream()
+        if self.tray_icon:
+            self.tray_icon.stop()
+        self.root.after(0, self.root.destroy)
+
+    def on_closing(self):
+        if self.is_hidden:
+            return
+        if messagebox.askyesno("提示", "是否将程序最小化到系统托盘？\n(选择“否”将彻底退出程序)"):
+            self.hide_to_tray()
+        else:
+            self.quit_app()
 
     def async_scan(self):
         self.scanned_screens = scan_valid_screens(self.log)
@@ -412,8 +471,9 @@ class App:
         if self.sender: 
             self.sender.stop()
             self.sender = None
-        self.start_btn.config(state="normal"); self.stop_btn.config(state="disabled")
-        self.ip_entry.config(state="normal"); self.display_combo.config(state="readonly")
+        if hasattr(self, 'start_btn'):
+            self.start_btn.config(state="normal"); self.stop_btn.config(state="disabled")
+            self.ip_entry.config(state="normal"); self.display_combo.config(state="readonly")
 
     def process_queues(self):
         while not self.log_queue.empty():
@@ -432,5 +492,5 @@ class App:
 if __name__ == "__main__":
     root = tk.Tk()
     app = App(root)
-    root.protocol("WM_DELETE_WINDOW", lambda: (app.stop_stream(), root.destroy()))
+    root.protocol("WM_DELETE_WINDOW", app.on_closing)
     root.mainloop()
