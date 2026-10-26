@@ -20,6 +20,7 @@ NetCasting 是一套专为局域网（LAN）环境设计的轻量级屏幕共享
 - **操作系统**：Windows 10 / 11（仅限 Windows）
 - **网络环境**：**千兆有线局域网（推荐，由于涉及高清流传输）**。不支持跨公网（互联网）使用。
 - **Python 版本**：Python 3.9 及以上（推荐 3.10+）
+- 建议使用`pygame-ce`代替pygame，兼容性更好
 
 **安装依赖：**
 ```bash
@@ -47,12 +48,12 @@ pip install dxcam opencv-python numpy lz4 pygame pywin32 Pillow screeninfo
 
 **打包接收端 (B端)：**
 ```bash
-pyinstaller -F -w receiver.py
+pyinstaller -F -w -i icon.ico --add-data "ibeam.png;." --hidden-import pygame receiver.py
 ```
 
 **打包发送端 (A端) + 资源：**
 ```bash
-pyinstaller -F -w -i --add-data "ibeam.png;." --hidden-import screeninfo --hidden-import dxcam sender_gui.py
+pyinstaller -F -w -i icon.ico --add-data "logo.png;." --add-data "ibeam.png;." --hidden-import pystray --hidden-import PIL.ImageDraw --hidden-import screeninfo --hidden-import dxcam sender.py
 ```
 > *注：请确保 `ibeam.png`（工字型光标素材）与脚本在同一目录，打包时会自动打入内部。*
 
